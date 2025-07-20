@@ -1,10 +1,10 @@
-import operator
+import asyncio
 
-from typing import TypedDict, List, Annotated
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import ToolNode
+from langgraph.graph.message import MessagesState
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.globals import set_debug, set_verbose
 
@@ -18,35 +18,21 @@ set_verbose(True)
 client = MultiServerMCPClient(
     {
         "healthcare_insurance_plan": {
-            "url": "http://localhost:8000/healthcare-insurance-plan/mcp",
+            "url": "http://localhost:3000/healthcare-insurance-plan/mcp",
             "transport": "streamable_http",
         },
         "vehicle_insurance_claims": {
-            "url": "http://localhost:8000/vehicle-insurance-claims/mcp",
+            "url": "http://localhost:3000/vehicle-insurance-claims/mcp",
             "transport": "streamable_http",
         },
     }
 )
 
-
-class AgentState(TypedDict):
-    messages: Annotated[List[BaseMessage], operator.add]
-
-
 class MultiAgents:
     def __init__(self):
-        self.tools = None
-        self.llm = None
-        self.memory = None
-        self.agent = None
-        self._initialized = False
-
-    async def _initialize(self):
-        if not self._initialized:
-            self.tools = await client.get_tools()
-            self.llm = self._setup_gemini_llm()
-            self.agent = self._create_graph()
-            self._initialized = True
+        self.tools = asyncio.run(client.get_tools())
+        self.llm = self._setup_gemini_llm()
+        self.agent = self._create_graph()
 
     def _setup_gemini_llm(self):
         return ChatGoogleGenerativeAI(
@@ -55,7 +41,7 @@ class MultiAgents:
         ).bind_tools(self.tools)
 
     def _create_graph(self):
-        workflow = StateGraph(AgentState)
+        workflow = StateGraph(MessagesState)
         tool_node = ToolNode(self.tools)
 
         workflow.add_edge(START, "agent")
@@ -68,7 +54,7 @@ class MultiAgents:
 
         return workflow.compile()
 
-    def _should_continue(self, state: AgentState) -> str:
+    def _should_continue(self, state: MessagesState) -> str:
         messages = state["messages"]
         last_message = messages[-1]
 
@@ -77,12 +63,12 @@ class MultiAgents:
 
         return END
 
-    async def _call_llm(self, state: AgentState):
+    async def _call_llm(self, state: MessagesState):
         response = await self.llm.ainvoke(state["messages"])
         return {"messages": [response]}
 
-    async def chat(self, messages):
-        state = AgentState(messages=messages)
+    async def chat(self, message):
+        state = MessagesState(messages=[HumanMessage(content=message)])
         response = await self.agent.ainvoke(state)
         return response["messages"][-1].content
 
